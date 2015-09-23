@@ -406,10 +406,20 @@ class TraitType(BaseDescriptor):
         """
         # Traitlets without a name are not on the instance, e.g. in List or Union
         if self.name:
+            # Only look for default handlers classes derived from self.this_class
+            default_handler = obj._trait_default_generators.get(self.name)
             mro = type(obj).mro()
+            if default_handler is not None:
+                for cls in mro[:mro.index(self.this_class) + 1]:
+                    if default_handler.this_class == cls:
+                        return types.MethodType(default_handler.func, obj)
+
+            # Handling deprecated magic method
             meth_name = '_%s_default' % self.name
-            for cls in mro[:mro.index(self.this_class)+1]:
+            for cls in mro[:mro.index(self.this_class) + 1]:
                 if meth_name in cls.__dict__:
+                    warn("_[traitname]_default handlers are deprecated: use default"
+                         " decorator instead", DeprecationWarning, stacklevel=2)
                     return getattr(obj, meth_name)
 
         return getattr(self, 'make_dynamic_default', None)
@@ -660,7 +670,18 @@ def validate(*names):
         The str names of the Traits to validate.
     """
     return ValidateHandler(names)
-    
+
+
+def default(name):
+    """ A decorator which assigns a dynamic default for a Trait on a HasTraits object.
+
+    Parameters
+    ----------
+    name
+        The str name of the Trait on the object whose default should be generated.
+    """
+    return DefaultHandler(name)
+
 
 class EventHandler(BaseDescriptor):
 
@@ -702,6 +723,15 @@ class ValidateHandler(EventHandler):
         inst._register_validator(meth, self.names)
 
 
+class DefaultHandler(EventHandler):
+
+    def __init__(self, name):
+        self._name = name
+
+    def instance_init(self, inst):
+        inst._trait_default_generators[self._name] = self
+
+
 class HasTraits(py3compat.with_metaclass(MetaHasTraits, object)):
     """The base class for all classes that have traitlets.
     """
@@ -715,6 +745,7 @@ class HasTraits(py3compat.with_metaclass(MetaHasTraits, object)):
         else:
             inst = new_meth(cls, **kw)
         inst._trait_values = {}
+        inst._trait_default_generators = {}
         inst._trait_notifiers = {}
         inst._trait_validators = {}
         inst._cross_validation_lock = True
